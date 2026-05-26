@@ -10,6 +10,7 @@ add_executable(mini-hadoop-tests
   ndfs/ndfs_integration_test.cpp
   mapred/mapred_test.cpp
   mapred/dist_mapred_test.cpp
+  full_chain_test.cpp
 )
 
 target_link_libraries(mini-hadoop-tests PRIVATE
