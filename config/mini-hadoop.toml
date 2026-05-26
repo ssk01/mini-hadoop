@@ -1,0 +1,27 @@
+# mini-hadoop default configuration
+
+[ndfs]
+# NameNode RPC address
+namenode_host = "localhost"
+namenode_port = 9000
+
+# Block size in bytes (default 64MB)
+block_size = 67108864
+
+# Replication factor
+replication = 3
+
+# Data storage directory for DataNode
+data_dir = "/tmp/mini-hadoop/ndfs"
+
+[mapred]
+# JobTracker RPC address
+jobtracker_host = "localhost"
+jobtracker_port = 9001
+
+# TaskTracker local working directory
+local_dir = "/tmp/mini-hadoop/mapred"
+
+# Number of map/reduce slots per TaskTracker
+map_tasks_max = 2
+reduce_tasks_max = 2
