@@ -214,3 +214,47 @@ TEST_F(StressTest, WordCountHundredKB) {
   dn.Stop();
   nn.Stop();
 }
+
+TEST_F(StressTest, Write100MBMultiBlockWithMD5) {
+  ndfs::NameNode nn(17206, kStressDir + "/fsimage_100mb");
+  ASSERT_TRUE(nn.Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  ndfs::DataNode dn(kStressDir + "/dn_100mb", "127.0.0.1", 17206, 17216);
+  ASSERT_TRUE(dn.Start());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  ndfs::DfsClient client("127.0.0.1", 17206, 10 * 1024 * 1024);
+  ASSERT_TRUE(client.Connect().ok());
+
+  const size_t kSize = 100ULL * 1024 * 1024;  // 100 MB
+  std::vector<uint8_t> data(kSize);
+  uint32_t seed = 12345;
+  for (size_t i = 0; i < kSize; i++) {
+    seed = seed * 1103515245 + 12345;
+    data[i] = static_cast<uint8_t>(seed >> 16);
+  }
+
+  auto md5 = MD5Hash::Compute(data);
+
+  auto t0 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(client.WriteFile("/100mb.bin", data.data(), kSize, true).ok());
+  auto t1 = std::chrono::steady_clock::now();
+  auto write_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+
+  std::vector<uint8_t> readback;
+  t0 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(client.ReadFile("/100mb.bin", readback).ok());
+  t1 = std::chrono::steady_clock::now();
+  auto read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+
+  EXPECT_EQ(readback.size(), kSize);
+  EXPECT_EQ(MD5Hash::Compute(readback).ToHexString(), md5.ToHexString());
+
+  std::cout << "[stress] 100MB: write=" << write_ms << "ms read=" << read_ms << "ms"
+            << " md5=" << md5.ToHexString() << "\n";
+
+  client.Disconnect();
+  dn.Stop();
+  nn.Stop();
+}
