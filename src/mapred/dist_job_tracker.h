@@ -56,6 +56,8 @@ class DistJobTracker {
     SetupHandlers();
   }
 
+  ~DistJobTracker() { server_.Stop(); }
+
   bool Start() {
     if (!server_.Start()) return false;
     spdlog::info("JobTracker started on port {}", server_.Port());
@@ -118,10 +120,10 @@ class DistJobTracker {
         if (t.type == TaskType::kMap) {
           resp.WriteString(t.input_path);
           resp.WriteString("");  // no output path for map
-          resp.WriteInt(0);  // no map outputs for map task
+          resp.WriteString("");  // no map output locations
         } else {
           resp.WriteString("");
-          resp.WriteString("");
+          resp.WriteString(output_path_);
           resp.WriteInt(0);
         }
         return;
@@ -136,6 +138,7 @@ class DistJobTracker {
         t.job_id = job_id_;
         t.type = TaskType::kReduce;
         t.partition = r;
+        t.output_path = output_path_;
         t.map_outputs = map_output_locations_;
 
         pending_reduces_.push_back(t);
@@ -150,7 +153,7 @@ class DistJobTracker {
         resp.WriteInt(static_cast<int>(t.type));
         resp.WriteInt(t.partition);
         resp.WriteString("");
-        resp.WriteString("");
+        resp.WriteString(t.output_path);
         // Serialize map output locations
         resp.WriteInt(static_cast<int32_t>(t.map_outputs.size()));
         for (const auto& loc : t.map_outputs) {

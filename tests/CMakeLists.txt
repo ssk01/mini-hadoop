@@ -13,6 +13,7 @@ add_executable(mini-hadoop-tests
   mapred/dist_mapred_test.cpp
   full_chain_test.cpp
   stress_test.cpp
+  full_dist_chain_test.cpp
 )
 
 target_link_libraries(mini-hadoop-tests PRIVATE

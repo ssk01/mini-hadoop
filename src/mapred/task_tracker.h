@@ -36,6 +36,10 @@ class TaskTracker {
     SetupShuffleServer();
   }
 
+  ~TaskTracker() {
+    if (running_) Stop();
+  }
+
   bool Start() {
     if (!shuffle_server_.Start()) return false;
     if (!jt_client_.Connect(jt_host_, jt_port_)) return false;
@@ -113,7 +117,7 @@ class TaskTracker {
         }).detach();
       } else {
         in.ReadString();  // skip input_path
-        in.ReadString();  // skip output_path
+        task.output_path = in.ReadString();  // output path for reduce
 
         int32_t num_locs = in.ReadInt();
         for (int i = 0; i < num_locs; i++) {
@@ -226,6 +230,11 @@ class TaskTracker {
       rc.out = &results;
       reducer->Reduce(UTF8(key), values, rc);
     }
+
+    // Write results to file
+    std::ofstream out(task.output_path);
+    for (const auto& [k, v] : results) out << k << "\t" << v << "\n";
+    out.close();
 
     spdlog::info("ReduceTask {} done, {} records", task.task_id, results.size());
   }
