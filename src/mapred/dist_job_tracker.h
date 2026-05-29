@@ -40,7 +40,8 @@ struct Task {
   int partition;
   std::string input_path;
   std::string output_path;
-  std::vector<MapOutputLocation> map_outputs;  // for reduce tasks
+  std::vector<MapOutputLocation> map_outputs;
+  bool is_speculative = false;
 };
 
 enum class JobState { kPending, kRunning, kSucceeded, kFailed };
@@ -60,11 +61,19 @@ class DistJobTracker {
 
   bool Start() {
     if (!server_.Start()) return false;
+    spec_running_ = true;
+    spec_thread_ = std::thread(&DistJobTracker::SpecLoop, this);
     spdlog::info("JobTracker started on port {}", server_.Port());
     return true;
   }
 
-  void Stop() { server_.Stop(); }
+  void Stop() {
+    spec_running_ = false;
+    server_.Stop();
+    if (spec_thread_.joinable()) spec_thread_.join();
+  }
+
+  int SpeculativeLaunched() const { return spec_launched_.load(); }
 
   bool IsJobDone() const { return job_done_.load(); }
 

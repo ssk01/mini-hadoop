@@ -256,7 +256,7 @@ mini-hadoop wordcount <input> <output>       # 运行 WordCount
 - SafeMode / Lease 管理
 - 多 DataNode 副本不足自动 re-replication
 - Combiner (Map 端预聚合)
-- 推测执行 (speculative execution)
+- 推测执行 (speculative execution) — WIP, 来自 hadoop-0.10.1
 
 ## 构建与测试
 
