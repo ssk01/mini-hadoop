@@ -28,6 +28,7 @@ class JobConfig {
 
 using MapperFactory = std::function<std::unique_ptr<Mapper<LongWritable, UTF8, UTF8, LongWritable>>()>;
 using ReducerFactory = std::function<std::unique_ptr<Reducer<UTF8, LongWritable, UTF8, LongWritable>>()>;
+using CombinerFactory = std::function<std::unique_ptr<Combiner<UTF8, LongWritable>>()>;
 
 struct MapOutput {
   UTF8 key;
@@ -40,10 +41,12 @@ class JobTracker {
 
   bool SubmitJob(const JobConfig& config,
                  MapperFactory mapper_factory,
-                 ReducerFactory reducer_factory) {
+                 ReducerFactory reducer_factory,
+                 CombinerFactory combiner_factory = nullptr) {
     config_ = config;
     mapper_factory_ = std::move(mapper_factory);
     reducer_factory_ = std::move(reducer_factory);
+    combiner_factory_ = std::move(combiner_factory);
     job_done_ = false;
     return true;
   }
@@ -90,6 +93,25 @@ class JobTracker {
       std::sort(part.begin(), part.end(), [](const auto& a, const auto& b) {
         return a.key.CompareTo(b.key) < 0;
       });
+    }
+
+    // --- Combiner (optional) ---
+    if (combiner_factory_) {
+      auto combiner = combiner_factory_();
+      for (auto& part : partitioned) {
+        std::vector<MapOutput> combined;
+        size_t j = 0;
+        while (j < part.size()) {
+          UTF8 key = part[j].key;
+          int64_t sum = 0;
+          while (j < part.size() && part[j].key.CompareTo(key) == 0) {
+            sum += part[j].value.Get();
+            j++;
+          }
+          combined.push_back({key, LongWritable(sum)});
+        }
+        part = std::move(combined);
+      }
     }
 
     // --- Reduce Phase ---
@@ -146,6 +168,7 @@ class JobTracker {
   JobConfig config_;
   MapperFactory mapper_factory_;
   ReducerFactory reducer_factory_;
+  CombinerFactory combiner_factory_;
   bool job_done_ = false;
 };
 

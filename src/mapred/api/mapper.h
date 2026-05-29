@@ -47,5 +47,57 @@ class HashPartitioner : public Partitioner<K> {
   }
 };
 
+template <typename K, typename V>
+class Combiner {
+ public:
+  virtual ~Combiner() = default;
+  virtual void Combine(const K& key, const std::vector<V>& values,
+                       OutputCollector<K, V>& output) = 0;
+};
+
+}  // namespace mapred
+}  // namespace mini_hadoop
+
+#include <map>
+#include <vector>
+#include <algorithm>
+
+namespace mini_hadoop {
+namespace mapred {
+
+template <typename K, typename V>
+struct CombiningCollector : public OutputCollector<K, V> {
+  std::map<std::string, int64_t> buffer;
+  std::unique_ptr<Combiner<K, V>>* combiner;
+  int flush_threshold = 10000;
+
+  void Collect(const K& key, const V& value) override {
+    buffer[key.ToString()] += value.Get();
+    if (static_cast<int>(buffer.size()) >= flush_threshold && combiner && *combiner) {
+      Flush();
+    }
+  }
+
+  void Flush() {
+    if (!combiner || !*combiner || buffer.empty()) return;
+    class Sink : public OutputCollector<K, V> {
+     public:
+      std::vector<std::pair<std::string, int64_t>>* out;
+      void Collect(const K& k, const V& v) override {
+        out->push_back({k.ToString(), v.Get()});
+      }
+    };
+    std::vector<std::pair<std::string, int64_t>> combined;
+    Sink s; s.out = &combined;
+
+    for (const auto& [k, v] : buffer) {
+      std::vector<V> vals = {V(v)};
+      (*combiner)->Combine(K(k), vals, s);
+    }
+    buffer.clear();
+    for (const auto& [k, v] : combined) buffer[k] = v;
+  }
+};
+
 }  // namespace mapred
 }  // namespace mini_hadoop
