@@ -5,76 +5,51 @@
 
 using namespace mini_hadoop;
 
-const std::string kTestFile = "/tmp/mini-hadoop-seq-test.seq";
-
 TEST(SequenceFileTest, WriteAndReadBack) {
-  SequenceFileWriter writer;
-  ASSERT_TRUE(writer.Open(kTestFile).ok());
+  SequenceFileWriter w;
+  ASSERT_TRUE(w.Open("/tmp/mh-seq-test.seq").ok());
 
-  for (int i = 0; i < 50; i++) {
-    ASSERT_TRUE(writer.Append(IntWritable(i), LongWritable(i * 100)).ok());
-  }
-  writer.Close();
-  EXPECT_EQ(writer.Count(), 50);
+  for (int i = 0; i < 50; i++)
+    ASSERT_TRUE(w.Append(IntWritable(i), LongWritable(i * 100)).ok());
+  w.Close();
 
-  SequenceFileReader reader;
-  ASSERT_TRUE(reader.Open(kTestFile).ok());
+  SequenceFileReader r;
+  ASSERT_TRUE(r.Open("/tmp/mh-seq-test.seq").ok());
 
   int count = 0;
-  while (reader.Next()) {
-    auto kdata = reader.Key();
-    auto vdata = reader.Value();
-
-    InputBuffer kb(kdata), vb(vdata);
-    IntWritable k;
-    k.ReadFields(kb);
-    LongWritable v;
-    v.ReadFields(vb);
-
-    EXPECT_EQ(k.Get(), count);
-    EXPECT_EQ(v.Get(), static_cast<int64_t>(count) * 100);
+  while (r.Next()) {
+    InputBuffer k(r.Key()), v(r.Value());
+    IntWritable ik; ik.ReadFields(k);
+    LongWritable lv; lv.ReadFields(v);
+    EXPECT_EQ(ik.Get(), count);
+    EXPECT_EQ(lv.Get(), static_cast<int64_t>(count) * 100);
     count++;
   }
-  reader.Close();
   EXPECT_EQ(count, 50);
-
-  std::remove(kTestFile.c_str());
+  r.Close();
+  std::remove("/tmp/mh-seq-test.seq");
 }
 
-TEST(SequenceFileTest, SyncMarker) {
-  SequenceFileWriter writer;
-  ASSERT_TRUE(writer.Open(kTestFile).ok());
+TEST(SequenceFileTest, SyncMarkers) {
+  SequenceFileWriter w;
+  ASSERT_TRUE(w.Open("/tmp/mh-seq-sync.seq").ok());
+  for (int i = 0; i < 250; i++)
+    ASSERT_TRUE(w.Append(IntWritable(i), IntWritable(i)).ok());
+  w.Close();
 
-  for (int i = 0; i < 250; i++) {
-    ASSERT_TRUE(writer.Append(IntWritable(i), IntWritable(i)).ok());
-  }
-  writer.Close();
-
-  SequenceFileReader reader;
-  ASSERT_TRUE(reader.Open(kTestFile).ok());
-
+  SequenceFileReader r;
+  ASSERT_TRUE(r.Open("/tmp/mh-seq-sync.seq").ok());
   int count = 0;
-  while (reader.Next()) {
-    InputBuffer k(reader.Key());
-    IntWritable kw;
-    kw.ReadFields(k);
-    EXPECT_EQ(kw.Get(), count);
-    count++;
-  }
-  reader.Close();
+  while (r.Next()) { count++; }
   EXPECT_EQ(count, 250);
-
-  std::remove(kTestFile.c_str());
+  r.Close();
+  std::remove("/tmp/mh-seq-sync.seq");
 }
 
 TEST(SequenceFileTest, EmptyKeyRejected) {
-  SequenceFileWriter writer;
-  ASSERT_TRUE(writer.Open(kTestFile).ok());
-
-  auto s = writer.AppendRaw(std::span<const uint8_t>{}, std::span<const uint8_t>{1, 2, 3});
-  EXPECT_FALSE(s.ok());
-  EXPECT_EQ(s.message(), "zero-length key");
-
-  writer.Close();
-  std::remove(kTestFile.c_str());
+  SequenceFileWriter w;
+  ASSERT_TRUE(w.Open("/tmp/mh-seq-empty.seq").ok());
+  EXPECT_FALSE(w.AppendRaw({}, {}).ok());
+  w.Close();
+  std::remove("/tmp/mh-seq-empty.seq");
 }

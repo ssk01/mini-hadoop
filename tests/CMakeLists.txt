@@ -3,6 +3,7 @@ add_executable(mini-hadoop-tests
   io/buffer_test.cpp
   io/writable_types_test.cpp
   io/md5_test.cpp
+  io/sequence_file_test.cpp
   ipc/ipc_test.cpp
   ndfs/inode_tree_test.cpp
   ndfs/fs_namesystem_test.cpp

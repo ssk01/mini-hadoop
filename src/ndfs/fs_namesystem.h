@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <spdlog/spdlog.h>
 
 #include "ndfs/block.h"
 #include "ndfs/datanode_info.h"
@@ -17,6 +18,8 @@ namespace ndfs {
 
 static constexpr int64_t kDefaultBlockSize = 64 * 1024 * 1024;  // 64MB
 static constexpr int kDefaultReplication = 3;
+static constexpr double kSafeModeThreshold = 0.999;  // 99.9% blocks reported
+static constexpr int64_t kLeaseTimeout = 60;  // seconds
 
 class FsNamesystem {
  public:
@@ -33,9 +36,11 @@ class FsNamesystem {
   StartFileResult StartFile(const std::string& path, bool overwrite) {
     std::lock_guard<std::mutex> lock(mutex_);
 
+    if (InSafeMode()) return {};
+
     auto* existing = tree_.GetNode(path);
     if (existing && !overwrite) {
-      // error handled by caller
+      return {};
     }
     if (existing && overwrite) {
       tree_.Delete(path);
@@ -211,6 +216,75 @@ class FsNamesystem {
 
   InodeTree& GetTree() { return tree_; }
 
+  // === SafeMode ===
+  bool InSafeMode() const {
+    if (datanodes_.empty()) return true;
+    if (total_blocks_ == 0) return false;
+    double ratio = static_cast<double>(safe_blocks_) / total_blocks_;
+    return ratio < kSafeModeThreshold;
+  }
+
+  void EnterSafeMode() { safe_mode_countdown_ = 30; }
+
+  void UpdateSafeMode() {
+    int64_t total = 0, safe = 0;
+    for (const auto& [bid, dns] : block_to_datanodes_) {
+      total++;
+      if (!dns.empty()) safe++;
+    }
+    total_blocks_ = total;
+    safe_blocks_ = safe;
+
+    if (safe_mode_countdown_ > 0) {
+      safe_mode_countdown_--;
+      if (safe_mode_countdown_ == 0 && !InSafeMode())
+        spdlog::info("SafeMode: left ({} blocks, {} safe)", total_blocks_, safe_blocks_);
+    }
+  }
+
+  bool CanWrite() const { return safe_mode_countdown_ <= 0 && !InSafeMode(); }
+
+  // === Lease ===
+  void AddLease(const std::string& holder, const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Lease l; l.holder = holder; l.path = path; l.expiry = CurrentTime() + kLeaseTimeout;
+    leases_[path] = l;
+  }
+
+  void RemoveLease(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    leases_.erase(path);
+  }
+
+  void CheckLeases() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto now = CurrentTime();
+    for (auto it = leases_.begin(); it != leases_.end(); ) {
+      if (it->second.expiry < now) {
+        spdlog::warn("Lease expired: {} (holder: {})", it->second.path, it->second.holder);
+        tree_.Delete(it->second.path);
+        it = leases_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // === Re-replication ===
+  std::vector<std::pair<Block, DataNodeInfo>> GetUnderReplicatedBlocks() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::pair<Block, DataNodeInfo>> result;
+    for (const auto& [bid, dns] : block_to_datanodes_) {
+      if (static_cast<int>(dns.size()) < kDefaultReplication && !dns.empty()) {
+        Block b; b.block_id = bid;
+        for (auto& dn : ChooseTargets(kDefaultReplication - static_cast<int>(dns.size()))) {
+          result.push_back({b, dn});
+        }
+      }
+    }
+    return result;
+  }
+
  private:
   std::vector<DataNodeInfo> ChooseTargets(int replication) {
     std::vector<DataNodeInfo> targets;
@@ -238,6 +312,13 @@ class FsNamesystem {
   std::unordered_map<std::string, DataNodeInfo> datanodes_;
   std::unordered_map<int64_t, std::vector<DataNodeInfo>> block_to_datanodes_;
   std::unordered_map<std::string, std::vector<Block>> dn_to_blocks_;
+
+  int64_t total_blocks_ = 0;
+  int64_t safe_blocks_ = 0;
+  int safe_mode_countdown_ = 30;  // ticks before leaving SafeMode
+
+  struct Lease { std::string holder; std::string path; int64_t expiry; };
+  std::unordered_map<std::string, Lease> leases_;
 };
 
 }  // namespace ndfs

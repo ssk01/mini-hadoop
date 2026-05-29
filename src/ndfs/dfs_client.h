@@ -3,12 +3,17 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <spdlog/spdlog.h>
 
 #include "io/buffer.h"
 #include "ipc/client.h"
 #include "ndfs/block.h"
 #include "ndfs/datanode_info.h"
+#include "ndfs/data_xceive_server.h"
 #include "ndfs/name_node.h"
 
 namespace mini_hadoop {
@@ -94,27 +99,27 @@ class DfsClient {
       Block block = ReadBlock(in);
       auto targets = ReadDataNodeInfoList(in);
 
-      // Write block via pipeline: send to first DN with downstream targets
+      // Write block via DataXceiveServer (op 80 = write)
       if (!targets.empty()) {
-        auto& first_dn = targets[0];
-        ipc::RpcClient dn_client;
-        if (dn_client.Connect(first_dn.host, first_dn.port)) {
-          OutputBuffer block_req;
-          block_req.WriteLong(block.block_id);
-          block_req.WriteLong(static_cast<int64_t>(chunk_size));
-          block_req.WriteInt(static_cast<int32_t>(targets.size()) - 1);  // remaining targets
-          for (size_t i = 1; i < targets.size(); i++) {
-            block_req.WriteString(targets[i].host);
-            block_req.WriteInt(targets[i].port);
-            block_req.WriteLong(targets[i].capacity);
-            block_req.WriteLong(targets[i].remaining);
-            block_req.WriteLong(targets[i].last_update);
-          }
-          block_req.WriteRawBytes(data + offset, chunk_size);
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(targets[0].port));
+        inet_pton(AF_INET, targets[0].host.c_str(), &addr.sin_addr);
 
-          std::vector<uint8_t> block_resp;
-          dn_client.CallRaw(0, block_req.Data(), block_resp);
-          dn_client.Disconnect();
+        if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+          uint8_t op = kOpWriteBlock;
+          send(sock, &op, 1, 0);
+
+          int64_t bid_be = HostToNet64(static_cast<uint64_t>(block.block_id));
+          int64_t len_be = HostToNet64(static_cast<uint64_t>(chunk_size));
+          send(sock, &bid_be, 8, 0);
+          send(sock, &len_be, 8, 0);
+          send_full(sock, data + offset, chunk_size);
+
+          uint8_t ack;
+          read(sock, &ack, 1);
+          close(sock);
         }
       }
 
@@ -156,24 +161,34 @@ class DfsClient {
       Block block = ReadBlock(in);
       auto targets = ReadDataNodeInfoList(in);
 
+      // Read block via DataXceiveServer
       bool read_ok = false;
       for (const auto& dn : targets) {
-        ipc::RpcClient dn_client;
-        if (!dn_client.Connect(dn.host, dn.port)) continue;
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(dn.port));
+        inet_pton(AF_INET, dn.host.c_str(), &addr.sin_addr);
 
-        OutputBuffer block_req;
-        block_req.WriteLong(block.block_id);
+        if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) continue;
 
-        std::vector<uint8_t> block_resp;
-        if (dn_client.CallRaw(1, block_req.Data(), block_resp).ok()) {  // op 1 = read block
-          InputBuffer bin(block_resp);
-          auto chunk = bin.ReadBytes();
-          data.insert(data.end(), chunk.begin(), chunk.end());
-          read_ok = true;
-          dn_client.Disconnect();
-          break;
+        uint8_t op = kOpReadBlock;
+        send(sock, &op, 1, 0);
+        int64_t bid_be = HostToNet64(static_cast<uint64_t>(block.block_id));
+        send(sock, &bid_be, 8, 0);
+
+        int64_t data_len_be;
+        if (recv_full(sock, &data_len_be, 8) < 0) { close(sock); continue; }
+        int64_t data_len = static_cast<int64_t>(NetToHost64(static_cast<uint64_t>(data_len_be)));
+
+        auto prev_size = data.size();
+        data.resize(prev_size + static_cast<size_t>(data_len));
+        if (recv_full(sock, data.data() + prev_size, static_cast<size_t>(data_len)) < 0) {
+          data.resize(prev_size); close(sock); continue;
         }
-        dn_client.Disconnect();
+        close(sock);
+        read_ok = true;
+        break;
       }
 
       if (!read_ok) return Status::IOError("cannot read block " + std::to_string(block.block_id));
@@ -214,6 +229,36 @@ class DfsClient {
   std::string nn_host_;
   int nn_port_;
   int64_t block_size_;
+
+  static int send_full(int fd, const void* buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+      auto n = send(fd, static_cast<const char*>(buf) + total, len - total, 0);
+      if (n <= 0) return -1;
+      total += static_cast<size_t>(n);
+    }
+    return 0;
+  }
+
+  static int recv_full(int fd, void* buf, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+      auto n = recv(fd, static_cast<char*>(buf) + total, len - total, 0);
+      if (n <= 0) return -1;
+      total += static_cast<size_t>(n);
+    }
+    return 0;
+  }
+
+  static uint64_t HostToNet64(uint64_t v) {
+    return (static_cast<uint64_t>(htonl(v & 0xFFFFFFFF)) << 32)
+         | htonl(static_cast<uint32_t>(v >> 32));
+  }
+
+  static uint64_t NetToHost64(uint64_t v) {
+    return (static_cast<uint64_t>(ntohl(v & 0xFFFFFFFF)) << 32)
+         | ntohl(static_cast<uint32_t>(v >> 32));
+  }
 };
 
 }  // namespace ndfs
