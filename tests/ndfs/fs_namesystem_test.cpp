@@ -33,6 +33,8 @@ TEST(FsNamesystemTest, MkdirsAndList) {
 
 TEST(FsNamesystemTest, Delete) {
   FsNamesystem ns;
+  DataNodeInfo dn{"dn1", "127.0.0.1", 50010, 1000, 900, 0};
+  ns.RegisterDataNode(dn);
   ns.StartFile("/del.txt", false);
   EXPECT_TRUE(ns.Delete("/del.txt"));
 

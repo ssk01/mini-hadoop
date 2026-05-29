@@ -55,6 +55,7 @@ class DataXceiveServer {
 
   void Stop() {
     running_ = false;
+    queue_cv_.notify_all();
     if (listen_fd_ >= 0) { shutdown(listen_fd_, SHUT_RDWR); close(listen_fd_); listen_fd_ = -1; }
     if (accept_thread_.joinable()) accept_thread_.join();
     for (auto& t : workers_) if (t.joinable()) t.join();
